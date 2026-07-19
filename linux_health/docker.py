@@ -36,7 +36,7 @@ def get_info() -> dict:
     }
 
 
-def clean(dry_run: bool = False) -> dict:
+def clean(dry_run: bool = False, rollback: bool = False) -> dict:
     result: dict = {"freed": 0, "actions": []}
     if not command_exists("docker"):
         result["error"] = "docker not found"

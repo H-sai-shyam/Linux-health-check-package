@@ -1,9 +1,9 @@
 # Linux Health — Complete Architecture Document
 
-> **Version:** 1.0.0  
+> **Version:** 1.2.0  
 > **Location:** `/home/shyam/linux-health/`  
 > **Shortcut:** `lh` (symlink to `linux-health`)  
-> **Source size:** ~500 KB | **Total footprint:** < 50 MB  
+> **Source size:** ~1.6 MB | **Total footprint:** < 50 MB  
 > **Dependencies:** `python-rich`, `python-psutil`, `python-typer`
 
 ---
@@ -12,7 +12,7 @@
 
 ```
 /home/shyam/linux-health/
-├── linux_health/                    # Python package (17 modules)
+├── linux_health/                    # Python package (20+ modules)
 │   ├── __init__.py                  # Package version
 │   ├── __main__.py                  # Entry: `python3 -m linux_health`
 │   ├── cli.py                       # CLI entry point, flag routing
@@ -38,7 +38,19 @@
 │   ├── history.py                   # Cleanup history
 │   ├── notifications.py             # notify-send integration
 │   ├── report.py                    # All rich-formatted output functions
-│   └── utils.py                     # Shared helpers
+│   ├── utils.py                     # Shared helpers
+│   ├── trash.py                     # Rollbackable cleanup system
+│   ├── collectors/                  # Collector framework
+│   │   ├── __init__.py
+│   │   ├── base.py                  # Finding dataclass, BaseCollector ABC
+│   │   ├── kernelcheck.py           # Kernel-level analysis (--kernel)
+│   │   ├── malware.py               # Malware/rootkit scanner (--malware)
+│   │   ├── hardware_scanner.py      # Full hardware inventory with condition %
+│   │   └── healthcheck.py           # Orchestrator for default dashboard runs
+│   └── engine/                      # NEW: Scoring & runner engine
+│       ├── __init__.py
+│       ├── runner.py                # Runs collectors with timeout isolation
+│       └── scoring.py               # 0-100 health score calculator
 ├── systemd/                         # Systemd unit files
 │   ├── linux-health.service         # Cleanup job
 │   ├── linux-health.timer           # Weekly timer
@@ -50,6 +62,9 @@
 ├── uninstall.sh                     # Uninstallation script
 ├── pyproject.toml                   # Python build config
 ├── setup.cfg                        # Package metadata
+├── README.md                        # User docs
+├── COMMAND-EXPLANATION.md           # Internal workings of every command
+├── UPGRADE-PLAN.md                  # Future roadmap
 └── ARCHITECTURE.md                  # This file
 ```
 
@@ -64,33 +79,46 @@ The CLI uses **Typer** (a modern Click wrapper) with a single `@app.callback` th
                  │
            @app.callback()
                  │
-          ┌──────┼──────────┬──────────┬──────────┬──────────┬──────┐
-          │      │          │          │          │          │      │
-      --help  --version  --history  --disk  --battery  --update  ...
-          │      │          │          │          │          │      │
-     show_help() │    show_     show_disk_ show_bat_ show_update_
-                 │    history()  analysis() tery()    report()
-                 │
-             --net --security --boot --sensors --doctor --clean
-              │      │          │       │        │        │
-          show_net_ show_sec_ show_boot_ show_sens_ show_doc_ run_cleanup()
-          report()  report()  report()  report()   results()
+          ┌──────┼──────────┬──────────┬──────────┬──────────┬──────────┬──────┐
+          │      │          │          │          │          │          │      │
+      --help  --version  --history  --disk  --battery  --update  --kernel ...
+          │      │          │          │          │          │          │
+     show_  console.  show_    show_    show_    show_     KernelCheck_
+     help()  print()  history  findings_ battery_  update    Collector()
+                       ()      summary  report()  report()      │
+                               + disk                engine.scoring()
+                               analysis                   │
+                                                    show_deep_scan_results()
+
+  --malware  --net  --security --boot --sensors --doctor --clean   (no flag)
+      │        │        │        │        │        │        │         │
+  Malware_   show_   show_    show_   Hardware_  show_   run_    Dashboard
+  Collector  net_    sec_     boot_   Scanner +  doctor  cleanup()  │
+      │      report  report   report  sensors    results()       health.
+  engine.    ()      ()       ()      report()                  collect_all
+  scoring()                         │                               │
+      │                        show_findings_                   health_check
+  show_deep_                     summary()                     included via
+  scan_results()                + sensors                      collectors/
+                                 report()                      healthcheck.py
 ```
 
 ### Flag priority (first match wins):
 1. `--help` → custom rich help page
 2. `--version` → version string
 3. `--history` → cleanup history
-4. `--disk` → disk analysis
-5. `--battery` → battery report
+4. `--disk` → disk analysis + severity findings
+5. `--battery` → battery report + severity findings
 6. `--update` → system update
-7. `--net` → network diagnostics
-8. `--security` → security audit
-9. `--boot` → boot & kernel analysis
-10. `--sensors` → sensor readout
-11. `--doctor` → diagnostics
-12. `--clean` → run cleanup
-13. _(no flag)_ → default dashboard
+7. `--kernel` → deep kernel analysis + severity findings
+8. `--malware` → malware/rootkit scan + severity findings
+9. `--net` → network diagnostics + severity findings
+10. `--security` → security audit
+11. `--boot` → boot & kernel analysis + severity findings
+12. `--sensors` → hardware inventory with condition % + severity findings
+13. `--doctor` → diagnostics
+14. `--clean` → run cleanup
+15. _(no flag)_ → default dashboard + health score
 
 ### Special flag interactions:
 - `--clean --dry-run` → preview cleanup without deleting
@@ -401,6 +429,8 @@ This is the view layer. Every `show_*_report()` function:
 | `show_cleanup_summary()` | `--clean` | Per-cleaner freed space, actions taken, total freed |
 | `show_history()` | `--history` | Table of dates, freed space, actions |
 | `show_help()` | `--help` | Custom rich help page with all commands, descriptions, config info |
+| `show_deep_scan_results()` | `--kernel`, `--malware` | Score bar + per-finding severity panels |
+| `show_findings_summary()` | All severity-classified commands | Reusable finding panel renderer |
 
 **Visual elements used:**
 - `Panel` — section containers with colored borders
@@ -408,6 +438,211 @@ This is the view layer. Every `show_*_report()` function:
 - `Text` — styled text with alignment
 - `fmt_usage_bar()` — custom block-character progress bars (█/░)
 - Color coding: green (good), yellow (warning), red (critical), cyan (info), blue (section headers)
+
+### 4.18 `collectors/base.py` — Enhanced Finding Class
+
+```python
+@dataclass
+class Finding:
+    module: str         # e.g. "kernel", "malware", "hardware.input"
+    title: str          # Short name
+    detail: str         # What was found
+    severity: str       # "pass" | "info" | "warning" | "critical"
+    confidence: int     # 0-100 how sure we are
+    impact: str         # "low" | "medium" | "high" | "critical"
+    expected: bool      # True = expected behavior (e.g. NVIDIA taint on gaming laptop)
+    fixable: bool       # Can the user fix this?
+    risk: str           # "safe" | "low" | "moderate" | "high" | "dangerous"
+    category: str       # "kernel" | "malware" | "hardware" | "network" | ...
+    description: str    # Human-readable explanation of what this is
+    evidence: dict      # Supporting data
+    suggestion: str     # What to do about it
+```
+
+**Smart scoring formula:**
+```
+penalty = SEVERITY_WEIGHT × IMPACT_MULTIPLIER × (0.2 if expected else 1.0) × (confidence / 100)
+
+Critical = 10 points    × impact (1-3x) × expected (0.2x) × confidence
+Warning  = 5 points     × impact (1-3x) × expected (0.2x) × confidence
+Info     = 2 points     × impact (1-3x) × expected (0.2x) × confidence
+
+Cap: 30 points per category
+```
+
+**Example — NVIDIA taint (expected, low impact):** `5 × 1 × 0.2 × 1.0 = 1.0` penalty (negligible)
+**Example — ASLR disabled (unexpected, critical):** `10 × 3 × 1.0 × 1.0 = 30.0` penalty (significant)
+
+**Collectors tier system:**
+- `fast` — runs on `lh` default dashboard (<1s)
+- `standard` — runs on `--doctor`, `--kernel`, `--sensors`
+- `deep` — runs only on explicit `--malware`
+
+```python
+class BaseCollector(ABC):
+    name: str
+    tier: str           # "fast" | "standard" | "deep"
+    def collect() -> list[Finding]
+```
+
+Every collector implements this interface. The `tier` controls when it runs:
+- **fast** — runs on `lh` default dashboard
+- **standard** — runs on `--doctor`, `--kernel`, `--sensors`
+- **deep** — runs only on explicit `--malware`
+
+### 4.19 `collectors/kernelcheck.py` — Kernel-Level Checker
+
+| Check | Source | Severity |
+|---|---|---|
+| ASLR status | `/proc/sys/kernel/randomize_va_space` | critical if 0 |
+| Ptrace scope | `/proc/sys/kernel/yama/ptrace_scope` | warning if 0 |
+| Kptr restrict | `/proc/sys/kernel/kptr_restrict` | info if 0 |
+| Dmesg restrict | `/proc/sys/kernel/dmesg_restrict` | info if 0 |
+| Kexec disabled | `/proc/sys/kernel/kexec_disabled` | warning if 0 |
+| Kernel taint | `/proc/sys/kernel/tainted` (26 bits decoded) | warning/critical |
+| CPU vulnerabilities | `/sys/devices/system/cpu/vulnerabilities/*` | warning if "Vulnerable" |
+| AppArmor/SELinux | `/sys/module/apparmor/...`, `/sys/fs/selinux/enforce` | info if disabled |
+| Boot params | `/proc/cmdline` — dangerous flags | critical |
+| dmesg errors | `dmesg -l err -P` | info |
+| Out-of-tree modules | `lsmod` — check against known list | info |
+
+### 4.20 `collectors/malware.py` — Malware & Rootkit Scanner
+
+| Check | Method | Severity |
+|---|---|---|
+| Hidden processes | Compare `/proc` PIDs vs `ps aux` PIDs | critical |
+| Rootkit file paths | 30+ known rootkit file locations | critical |
+| Unusual SUID | `find / -perm -4000` vs known-safe list | warning |
+| World-writable PATH | Check every `$PATH` dir for `o+w` | critical |
+| Suspicious cron | Cron jobs executing from `/tmp`, `/dev/shm` | warning |
+| Unknown high ports | `ss -tlnp` — ports >1024 not in known services | info |
+
+### 4.21 `collectors/hardware_scanner.py` — Hardware Inventory with Condition %
+
+Scans all detectable system devices and reports each with a condition percentage:
+
+| Category | Devices | Condition basis |
+|---|---|---|
+| **Input** | Keyboard, Touchpad, Mouse, Lid Switch, Power Button, Camera, Tablet | Touchpad: IRQ spread analysis; others: 100% if detected |
+| **Power** | AC Adapter (Charger), Battery | Charger: 100% if online; Battery: from capacity or health |
+| **Thermal** | All thermal zones | 100% under 60°C → 10% at 95°C+ |
+| **Fans** | Every fan from hwmon/sensors | 100% if RPM > 500, 80% if >0, 50% if stopped |
+| **GPU** | NVIDIA (via nvidia-smi), AMD/Intel (via sysfs) | Based on temperature |
+| **USB** | All USB devices with speed | Speed tier: USB 3.x=100%, 2.0=85%, 1.x=60% |
+
+Condition severity mapping:
+- ≥80% → pass (Excellent/Good)
+- ≥50% → info (Fair)
+- ≥25% → warning (Poor)
+- <25% → critical (Critical)
+
+### 4.22 `engine/runner.py` — Collector Runner
+
+```python
+def run_collectors(collectors, tier="fast") -> list[Finding]
+```
+
+- Runs each collector's `collect()` method sequentially
+- Filters by tier: `fast` only, `standard` = fast+standard, `deep` = all
+- Catches exceptions per-collector so one failure never crashes the whole run
+- Returns combined list of findings
+
+### 4.23 `engine/scoring.py` — Smart Health Score Engine
+
+The scoring engine uses intelligent weighting with four factors:
+
+| Factor | Values | Effect |
+|---|---|---|
+| Severity weight | critical=10, warning=5, info=2 | Base penalty |
+| Impact multiplier | critical=3x, high=2x, medium=1.5x, low=1x | Scales penalty by real-world impact |
+| Expected multiplier | expected=0.2x, unexpected=1x | Expected findings (NVIDIA taint) get 80% discount |
+| Confidence multiplier | 0-100% | Low-confidence findings contribute less |
+
+```python
+def calculate_score(findings: list[Finding]) -> float:
+    penalty = min(SUM(findings), 30)  # cap per category
+    return max(0, 100 - penalty)
+
+def compute_overall_score(category_scores: dict) -> float:
+    return average of all non-empty category scores
+```
+
+Categories scored independently: kernel, malware, hardware, disk, battery, network, boot.
+Each category capped at 30 penalty (70 minimum score for one critical finding).
+
+### 4.24 `engine/runner.py` — Parallel Collector Runner
+
+Runs collectors using `ThreadPoolExecutor` for concurrent execution:
+
+```python
+def run_collectors(collectors, tier="fast", parallel=True) -> list[Finding]
+```
+
+- Filters collectors by tier (fast/standard/deep)
+- Parallel execution with up to 4 workers for multiple collectors
+- Falls back to sequential for single collector or when parallel=False
+- 30-second timeout per collector
+- Independent failure isolation — one failed collector never crashes the run
+
+### 4.25 `trash.py` — Rollbackable Cleanup System
+
+The rollback system replaces permanent deletion with reversible snapshots.
+
+**Trash directory:** `~/.local/share/linux-health/trash/`
+
+**Cleanup flow:**
+```
+lh --clean
+  → Files moved to trash/cleanup_YYYYMMDD_HHMMSS/
+  → Manifest created with original paths, sizes, timestamps
+  → 24-hour retention by default
+  → lh --restore list shows available snapshots
+  → lh --restore <id> restores files atomically
+  → lh --purge-trash removes all snapshots immediately
+```
+
+**Key functions:**
+
+| Function | Role |
+|---|---|
+| `trash_item(src)` | Moves a file/dir to rollback storage |
+| `create_manifest(id, items, actions)` | Creates JSON manifest with metadata |
+| `get_snapshots()` | Lists all available rollback snapshots |
+| `restore_snapshot(id)` | Restores a snapshot to original locations |
+| `purge_trash()` | Permanently deletes all snapshots |
+| `remove_expired(hours)` | Deletes snapshots older than retention period |
+
+**Manifest format:**
+```json
+{
+    "id": "cleanup_20260719_214511",
+    "created": "2026-07-19T21:45:11",
+    "expires": "2026-07-20T21:45:11",
+    "freed": 4500000000,
+    "items": [
+        {"original": "/home/user/.cache/pip", "trashed": ".../trash/cleanup_.../cache_pip", "size": 4200000000}
+    ]
+}
+```
+
+**Safety:**
+- Uses `shutil.move()` for instant, zero-copy moves (same filesystem)
+- Verifies original path is safe to recreate before restoring
+- Each snapshot is independent — restore one without affecting others
+- Auto-expired via systemd timer (configurable, default 24h, max 7d)
+
+### 4.26 `boot.py` — Proper Version Comparison
+
+Uses `vercmp` (the standard Arch Linux version comparison tool) instead of string comparison:
+
+```python
+def vercmp(v1, v2) -> int:     # Returns -1, 0, or 1
+def is_newer_kernel_available(current, latest) -> bool:
+```
+
+This prevents false positives like:
+- `7.1.3-arch1-2` vs `7.1.3.arch1-2` → vercmp says equal (correct)
+- `7.2.0` vs `7.1.3` → vercmp says newer (correct)
 
 ---
 
@@ -511,9 +746,20 @@ cli.py:main() → ensure_dirs()
                     → network.get_info()
                     → health.get_cache_sizes()
                     → health.get_dev_sizes()
-                    → history.get_history()  (for last/next cleanup)
+                    → history.get_history()
+                    → collectors.healthcheck.run_all_checks(tier="standard")
+                          → KernelCheckCollector.collect()
+                                → /proc/sys/kernel/* (ASLR, ptrace, taint, etc.)
+                                → /sys/devices/system/cpu/vulnerabilities/*
+                                → lsmod, dmesg, apparmor/selinux, /proc/cmdline
+                          → MalwareCollector.collect()
+                                → SUID find, /proc vs ps PID comparison
+                                → rootkit paths, cron audit, PATH check, ss ports
+                          → engine.scoring.calculate_score() for each category
               → get_doctor_recommendations(data)
               → show_dashboard(data, warnings)
+                    → HEALTH SCORE panel (overall score, severity counts, per-category)
+                    → SYSTEM, CPU, MEMORY, SWAP, BATTERY, STORAGE, etc.
 ```
 
 ### 7.2 Cleanup (`lh --clean`)
@@ -521,7 +767,7 @@ cli.py:main() → ensure_dirs()
 ```
 cli.py:main() → run_cleanup(dry_run=False)
               → for each enabled cleaner:
-                    clean_cache(False)
+                    clean_cache(False)        # only safe cache dirs
                     clean_thumbnails(False)
                     clean_tmp(False)
                     clean_journal(False)
@@ -536,15 +782,69 @@ cli.py:main() → run_cleanup(dry_run=False)
 ### 7.3 Battery report (`lh --battery`)
 
 ```
-cli.py:main() → get_battery_info()
-              → _find_battery() → /sys/class/power_supply/BAT0/
-              → reads 15+ sysfs attributes
-              → calculates health, degradation, time remaining
+cli.py:main() → generate bat_findings (health%, cycles, degradation thresholds)
+              → show_findings_summary(bat_findings)
+              → get_battery_info()
+                    → _find_battery() → /sys/class/power_supply/BAT0/
+                    → reads 15+ sysfs attributes
+                    → calculates health, degradation, time remaining
               → show_battery_report(bat_data)
                     → CHARGE panel (bar, %, status, time)
                     → HEALTH & INFO panel (degradation, cycles, technology, ...)
                     → ELECTRICAL panel (capacity, voltage, power)
                     → RECOMMENDATIONS panel
+```
+
+### 7.4 Kernel analysis (`lh --kernel`)
+
+```
+cli.py:main() → KernelCheckCollector.collect()
+              → /proc/sys/kernel/randomize_va_space           → ASLR score
+              → /proc/sys/kernel/yama/ptrace_scope            → ptrace restriction
+              → /proc/sys/kernel/kptr_restrict                → pointer exposure
+              → /proc/sys/kernel/dmesg_restrict               → log restriction
+              → /proc/sys/kernel/kexec_disabled               → kexec safety
+              → /proc/sys/kernel/tainted                      → taint decoding
+              → /sys/devices/system/cpu/vulnerabilities/*     → CPU vulns
+              → /sys/module/apparmor/parameters/enabled       → AppArmor status
+              → /sys/fs/selinux/enforce                       → SELinux status
+              → /proc/cmdline                                 → dangerous params
+              → dmesg -l err -P                                → kernel errors
+              → lsmod → detect out-of-tree modules
+              → engine.scoring.calculate_score(findings)
+              → show_deep_scan_results("Kernel Analysis", findings, score)
+```
+
+### 7.5 Malware scan (`lh --malware`)
+
+```
+cli.py:main() → MalwareCollector.collect()
+              → find / -perm -4000 -type f → SUID audit vs known-safe list
+              → os.listdir('/proc') vs ps aux → PID hiding detection
+              → Check 30+ known rootkit paths → rootkit file detection
+              → grep cron files for /tmp, /dev/shm execution → suspicious cron
+              → Check each $PATH dir for o+w permission → PATH hijack risk
+              → ss -tlnp4 → flag unknown high port listeners
+              → engine.scoring.calculate_score(findings)
+              → show_deep_scan_results("Malware Scan", findings, score)
+```
+
+### 7.6 Hardware sensors (`lh --sensors`)
+
+```
+cli.py:main() → HardwareScannerCollector.collect()
+              → /sys/class/input/event* → all input devices + IRQ for touchpad
+              → /sys/class/power_supply/* → AC adapter + battery
+              → /sys/class/thermal/thermal_zone* → all temperature sensors
+              → /sys/class/hwmon/hwmon*/fan*_input → all fan speeds
+              → nvidia-smi or /sys/class/drm/ → GPU info
+              → /sys/bus/usb/devices/ → all USB devices
+              → engine.scoring.calculate_score(findings)
+              → get_sensors_info() (existing detailed sensor data)
+              → show_sensors_report(info, hw_findings, score)
+                    → Hardware Condition score bar
+                    → show_findings_summary(hw_findings)
+                    → CPU TEMPERATURES, GPU, FAN SPEEDS panels
 ```
 
 ---
@@ -570,23 +870,25 @@ Every module returns plain dicts/lists. Formatting is entirely handled by `repor
 
 ## 9. Complete Command Reference
 
-| Command | Alias | What it does | Data sources |
+| Command | What it does | Data sources | Severity findings |
 |---|---|---|---|
-| `lh` | `linux-health` | Full system dashboard | All monitoring modules |
-| `lh --scan` | — | Dashboard, no cleanup | Same as `lh` |
-| `lh --clean` | — | Run all safe cleanups | `cleanup.py` + `pacman.py` + `flatpak.py` + `docker.py` |
-| `lh --clean --dry-run` | — | Preview only, no deletes | Same, with dry_run=True |
-| `lh --disk` | — | Detailed disk analysis | `disk.py`: df, du, find |
-| `lh --battery` | — | Battery report | `/sys/class/power_supply/BAT*/` |
-| `lh --update` | — | System update + pre-flight | `pacman`, `yay`/`paru`, `systemd-analyze` |
-| `lh --net` | — | Network diagnostics | `ip`, `ping`, `ss`, `iw`, `curl`, DNS |
-| `lh --security` | — | Security audit | `journalctl`, `find`, `ss`, `arch-audit` |
-| `lh --boot` | — | Boot & kernel analysis | `uname`, `df`, `systemd-analyze`, `dmesg`, `systemctl` |
-| `lh --sensors` | — | Hardware sensor readout | `sensors`, `nvidia-smi`, sysfs, `smartctl` |
-| `lh --doctor` | — | Diagnose issues + recommend | All monitoring modules + threshold checks |
-| `lh --history` | — | Cleanup history | `~/.local/share/linux-health/history.json` |
-| `lh --version` | — | Show version | `__init__.py` |
-| `lh --help` | — | This help page | `report.py:show_help()` |
+| `lh` | Full system dashboard + health score | All modules + kernel/malware collectors | Yes (health score bar) |
+| `lh --scan` | Dashboard, no cleanup | Same as `lh` | Yes |
+| `lh --clean` | Safe cleanup (cache, tmp, journal, pacman, flatpak) | `cleanup.py` | — |
+| `lh --clean --dry-run` | Preview only, no deletes | Same, dry_run=True | — |
+| `lh --disk` | Disk analysis + severity findings | `disk.py`: df, du, find | Yes (usage%, mounts, large files) |
+| `lh --battery` | Battery report + severity findings | `/sys/class/power_supply/BAT*/` | Yes (health, cycles, degradation) |
+| `lh --update` | System update + pre-flight checks | `pacman`, `yay`/`paru` | — |
+| `lh --net` | Network diagnostics + severity findings | `ip`, `ping`, `ss`, `iw`, `curl`, DNS | Yes (connectivity, latency, WiFi) |
+| `lh --security` | Security audit | `journalctl`, `find`, `ss`, `arch-audit` | — |
+| `lh --boot` | Boot/kernel analysis + severity findings | `uname`, `df`, `systemd-analyze`, `dmesg`, `systemctl` | Yes (failed services, errors, old kernels) |
+| `lh --sensors` | Hardware inventory with condition % | `collectors/hardware_scanner.py` + `sensors.py` | Yes (condition % per device) |
+| `lh --kernel` | Deep kernel analysis + severity findings | `collectors/kernelcheck.py` | Yes (taint, ASLR, vulns, LSM) |
+| `lh --malware` | Malware/rootkit scan + severity findings | `collectors/malware.py` | Yes (hidden procs, rootkits, SUID) |
+| `lh --doctor` | Diagnostics + recommendations | All monitoring modules + threshold checks | — |
+| `lh --history` | Cleanup history | `~/.local/share/linux-health/history.json` | — |
+| `lh --version` | Show version | `__init__.py` | — |
+| `lh --help` | Custom rich help page | `report.py:show_help()` | — |
 
 ---
 
@@ -594,8 +896,8 @@ Every module returns plain dicts/lists. Formatting is entirely handled by `repor
 
 | Category | Size | Location |
 |---|---|---|
-| Source code | ~500 KB | `~/linux-health/linux_health/` |
-| Installed package | ~30 KB | `~/.local/lib/python*/site-packages/linux_health/` |
+| Source code | ~1.3 MB | `~/linux-health/linux_health/` |
+| Installed package | ~50 KB | `~/.local/lib/python*/site-packages/linux_health/` |
 | Dependencies (rich + psutil + typer) | ~4.7 MB | `~/.local/lib/python*/site-packages/` |
 | Configuration | < 100 bytes | `~/.config/linux-health/config.toml` |
 | Logs (max) | 5 MB | `~/.local/share/linux-health/logs/` |
@@ -620,10 +922,20 @@ Every module returns plain dicts/lists. Formatting is entirely handled by `repor
 
 To add a new `lh --foo` command:
 
+### Option A — Simple module (for data display commands)
+
 1. Create `linux_health/foo.py` with a `collect_all() -> dict` function
 2. Add `show_foo_report()` to `report.py` with Rich formatting
 3. Add a `foo` option to the callback in `cli.py`
 4. Add the routing logic in the callback body
 5. Update `show_help()` in `report.py` with the new command description
 
-The architecture is designed for this — every component is independent, communicates via plain dicts, and is wired through `cli.py`.
+### Option B — Collector pattern (for severity-classified findings)
+
+1. Create `linux_health/collectors/foo.py` with a class extending `BaseCollector`
+2. Implement `collect() -> list[Finding]` with severity levels
+3. Wire into `engine/runner.py` via `run_collectors()`
+4. Display results via `show_findings_summary()` or `show_deep_scan_results()`
+5. Add flag routing in `cli.py`
+
+The architecture is designed for this — every component is independent, communicates via plain dicts or `Finding` objects, and is wired through `cli.py`.

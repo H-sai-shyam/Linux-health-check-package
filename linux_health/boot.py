@@ -34,6 +34,20 @@ def get_latest_kernel_pkg() -> str | None:
     return None
 
 
+def vercmp(v1: str, v2: str) -> int:
+    result = run_cmd(["vercmp", v1, v2], timeout=5)
+    if result:
+        try:
+            return int(result.strip())
+        except ValueError:
+            pass
+    return 0
+
+
+def is_newer_kernel_available(current: str, latest: str) -> bool:
+    return vercmp(latest, current) > 0
+
+
 def get_boot_usage() -> dict | None:
     try:
         result = subprocess.run(

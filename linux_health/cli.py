@@ -53,6 +53,8 @@ def main(
     sensors: bool = typer.Option(False, "--sensors", help="Hardware sensor readout"),
     kernel: bool = typer.Option(False, "--kernel", help="Deep kernel-level analysis"),
     malware: bool = typer.Option(False, "--malware", help="Malware and rootkit scan"),
+    restore: str | None = typer.Option(None, "--restore", help="Restore a cleanup snapshot by ID"),
+    purge_trash: bool = typer.Option(False, "--purge-trash", help="Permanently delete all rollback snapshots"),
     history: bool = typer.Option(False, "--history", help="Show cleanup history"),
     doctor: bool = typer.Option(False, "--doctor", help="Run diagnostics"),
     help_flag: bool = typer.Option(False, "--help", help="Show this help and exit"),
@@ -212,7 +214,8 @@ def main(
                 suggestion="Run: sudo pacman -R linux-<old-version>"))
         current = info.get("current_kernel", "")
         latest = info.get("latest_kernel_pkg", "")
-        if current and latest and current not in latest:
+        from linux_health.boot import is_newer_kernel_available
+        if current and latest and is_newer_kernel_available(current, latest):
             boot_findings.append(Finding(module="boot", title="Kernel update available",
                 detail=f"Running {current}, latest package is {latest}.",
                 severity="info", evidence={"current": current, "latest": latest},
@@ -260,8 +263,29 @@ def main(
         show_doctor_results(data, warnings)
         raise typer.Exit()
 
+    if restore:
+        from linux_health.trash import restore_snapshot, get_snapshots
+        snaps = get_snapshots()
+        snap_ids = [s.get("id") for s in snaps]
+        if restore == "list":
+            from linux_health.report import show_rollback_list
+            show_rollback_list(snaps)
+        elif restore in snap_ids:
+            result = restore_snapshot(restore)
+            from linux_health.report import show_restore_result
+            show_restore_result(result)
+        else:
+            console.print(f"[red]Snapshot '{restore}' not found. Run 'lh --restore list' to see available snapshots.[/]")
+        raise typer.Exit()
+
+    if purge_trash:
+        from linux_health.trash import purge_trash
+        result = purge_trash()
+        console.print(f"[yellow]Purged {result.get('purged', 0)} snapshot(s), freed {result.get('freed_h', '0B')}[/]")
+        raise typer.Exit()
+
     if clean:
-        summary = run_cleanup(dry_run=dry_run)
+        summary = run_cleanup(dry_run=dry_run, rollback=True)
         show_cleanup_summary(summary)
         if not dry_run and summary.get("total_freed", 0) > 0:
             from linux_health.config import load_config

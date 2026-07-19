@@ -5,6 +5,7 @@ from pathlib import Path
 from linux_health.config import load_config
 from linux_health.history import add_entry
 from linux_health.logger import write_log
+from linux_health.trash import trash_item, create_manifest
 from linux_health.utils import get_dir_size, human_size
 
 
@@ -56,13 +57,12 @@ def _is_protected(name: str) -> bool:
     return name in protected or any(name.startswith(p.rstrip("*")) for p in protected if p.endswith("*"))
 
 
-def clean_cache(dry_run: bool = False) -> dict:
-    result: dict = {"freed": 0, "actions": []}
+def clean_cache(dry_run: bool = False, rollback: bool = False) -> dict:
+    result: dict = {"freed": 0, "actions": [], "trashed": []}
     cache_dir = Path.home() / ".cache"
     if not cache_dir.exists():
         return result
 
-    cleaned_any = False
     for item in cache_dir.iterdir():
         name = item.name
         if _is_protected(name):
@@ -72,11 +72,15 @@ def clean_cache(dry_run: bool = False) -> dict:
                 result["actions"].append(f"Would clean {name}")
             else:
                 try:
-                    if item.is_dir():
-                        shutil.rmtree(item, ignore_errors=True)
+                    if rollback:
+                        t = trash_item(str(item))
+                        if "trashed" in t:
+                            result["trashed"].append(t)
                     else:
-                        item.unlink(missing_ok=True)
-                    cleaned_any = True
+                        if item.is_dir():
+                            shutil.rmtree(item, ignore_errors=True)
+                        else:
+                            item.unlink(missing_ok=True)
                 except PermissionError:
                     pass
             continue
@@ -88,20 +92,22 @@ def clean_cache(dry_run: bool = False) -> dict:
                 result["actions"].append(f"Would clean {name}")
             else:
                 try:
-                    item.unlink(missing_ok=True)
-                    cleaned_any = True
+                    if rollback:
+                        t = trash_item(str(item))
+                        if "trashed" in t:
+                            result["trashed"].append(t)
+                    else:
+                        item.unlink(missing_ok=True)
                 except PermissionError:
                     pass
 
-    if not dry_run and cleaned_any:
-        result["actions"].append("Cleaned safe cache directories")
-
-    result["freed"] = 0
+    if not dry_run:
+        result["actions"].append("Cleaned safe cache directories (rollbackable)" if rollback else "Cleaned safe cache directories")
     return result
 
 
-def clean_thumbnails(dry_run: bool = False) -> dict:
-    result: dict = {"freed": 0, "actions": []}
+def clean_thumbnails(dry_run: bool = False, rollback: bool = False) -> dict:
+    result: dict = {"freed": 0, "actions": [], "trashed": []}
     thumb_dir = Path.home() / ".cache" / "thumbnails"
     if not thumb_dir.exists():
         return result
@@ -112,7 +118,12 @@ def clean_thumbnails(dry_run: bool = False) -> dict:
         result["actions"].append(f"Would clean thumbnail cache ({thumb_dir})")
     else:
         try:
-            shutil.rmtree(thumb_dir, ignore_errors=True)
+            if rollback:
+                t = trash_item(str(thumb_dir))
+                if "trashed" in t:
+                    result["trashed"].append(t)
+            else:
+                shutil.rmtree(thumb_dir, ignore_errors=True)
         except PermissionError:
             pass
 
@@ -121,37 +132,36 @@ def clean_thumbnails(dry_run: bool = False) -> dict:
     return result
 
 
-def clean_tmp(dry_run: bool = False) -> dict:
-    result: dict = {"freed": 0, "actions": []}
+def clean_tmp(dry_run: bool = False, rollback: bool = False) -> dict:
+    result: dict = {"freed": 0, "actions": [], "trashed": []}
     tmp = Path("/tmp")
     if not tmp.exists():
         return result
 
-    size_before = get_dir_size(tmp)
-
     if dry_run:
         result["actions"].append("Would clean /tmp")
     else:
-        try:
-            for item in tmp.iterdir():
-                if item.name in (".", ".."):
-                    continue
-                try:
+        for item in tmp.iterdir():
+            if item.name in (".", ".."):
+                continue
+            try:
+                if rollback:
+                    t = trash_item(str(item))
+                    if "trashed" in t:
+                        result["trashed"].append(t)
+                else:
                     if item.is_dir():
                         shutil.rmtree(item, ignore_errors=True)
                     else:
                         item.unlink(missing_ok=True)
-                except PermissionError:
-                    pass
-        except PermissionError:
-            pass
+            except PermissionError:
+                pass
 
-    size_after = get_dir_size(tmp)
-    result["freed"] = size_before - size_after
+    result["freed"] = 0
     return result
 
 
-def clean_journal(dry_run: bool = False) -> dict:
+def clean_journal(dry_run: bool = False, rollback: bool = False) -> dict:
     result: dict = {"freed": 0, "actions": []}
     try:
         result_bytes = subprocess.run(
@@ -194,10 +204,11 @@ def clean_journal(dry_run: bool = False) -> dict:
     return result
 
 
-def run_cleanup(dry_run: bool = False) -> dict:
+def run_cleanup(dry_run: bool = False, rollback: bool = False) -> dict:
     config = load_config()
     total_freed = 0
     all_actions: list[str] = []
+    all_trashed: list[dict] = []
 
     cleaners = []
 
@@ -213,22 +224,24 @@ def run_cleanup(dry_run: bool = False) -> dict:
 
     from linux_health.pacman import clean as clean_pacman
     if config.get("cleanup_pacman"):
-        cleaners.append(("Pacman cache", lambda dr: clean_pacman(dr)))
+        cleaners.append(("Pacman cache", lambda dr, rb=False: clean_pacman(dr, rb or rollback)))
 
     from linux_health.flatpak import clean as clean_flatpak
     if config.get("cleanup_flatpak"):
-        cleaners.append(("Flatpak", lambda dr: clean_flatpak(dr)))
+        cleaners.append(("Flatpak", lambda dr, rb=False: clean_flatpak(dr, rb or rollback)))
 
     from linux_health.docker import clean as clean_docker
     if config.get("cleanup_docker"):
-        cleaners.append(("Docker", lambda dr: clean_docker(dr)))
+        cleaners.append(("Docker", lambda dr, rb=False: clean_docker(dr, rb or rollback)))
 
     results = {}
     for name, cleaner in cleaners:
-        r = cleaner(dry_run)
+        r = cleaner(dry_run, rollback)
         results[name] = r
-        total_freed += r.get("freed", 0)
+        freed = r.get("freed", 0)
+        total_freed += freed
         all_actions.extend(r.get("actions", []))
+        all_trashed.extend(r.get("trashed", []))
 
     summary = {
         "total_freed": total_freed,
@@ -236,7 +249,17 @@ def run_cleanup(dry_run: bool = False) -> dict:
         "actions": all_actions,
         "results": results,
         "dry_run": dry_run,
+        "rollback": rollback,
     }
+
+    if not dry_run and rollback and all_trashed:
+        manifest = create_manifest(
+            all_trashed[0].get("trash_id", "unknown"),
+            all_trashed, all_actions,
+        )
+        summary["trash_id"] = manifest["id"]
+        summary["trash_manifest"] = manifest
+        all_actions.append(f"Rollback available: lh --restore {manifest['id']}")
 
     if not dry_run:
         add_entry({"freed": total_freed, "freed_h": human_size(total_freed), "actions": all_actions})

@@ -426,6 +426,43 @@ def show_deep_scan_results(title: str, findings: list, score: float) -> None:
         show_findings_summary(findings)
 
 
+def show_rollback_list(snapshots: list[dict]) -> None:
+    if not snapshots:
+        console.print("[yellow]No rollback snapshots available.[/]")
+        return
+    rl_table = Table(title="Rollback Snapshots", box=box.SIMPLE)
+    rl_table.add_column("ID", style="bold")
+    rl_table.add_column("Created")
+    rl_table.add_column("Expires")
+    rl_table.add_column("Size")
+    rl_table.add_column("Items")
+    for s in snapshots:
+        si = __import__("linux_health.trash", fromlist=["snapshot_info"]).snapshot_info(s)
+        rl_table.add_row(
+            si.get("id", ""), si.get("created", ""), si.get("remaining", ""),
+            si.get("total_size_h", ""), str(si.get("items_count", 0)),
+        )
+    console.print(rl_table)
+    console.print("[dim]Restore with: lh --restore <snapshot-id>[/]")
+    console.print()
+
+
+def show_restore_result(result: dict) -> None:
+    if "error" in result:
+        console.print(f"[red]{result['error']}[/]")
+        return
+    restored = result.get("restored", 0)
+    total = result.get("total", 0)
+    errors = result.get("errors", [])
+    if restored == total:
+        console.print(f"[green]✓ Restored {restored}/{total} items from {result.get('id', 'snapshot')}[/]")
+    else:
+        console.print(f"[yellow]Restored {restored}/{total} items from {result.get('id', 'snapshot')}[/]")
+    for e in errors:
+        console.print(f"  [red]• {e}[/]")
+    console.print()
+
+
 def show_history() -> None:
     from linux_health.history import get_history
     history = get_history()
@@ -474,6 +511,10 @@ def show_cleanup_summary(summary: dict) -> None:
         console.print()
     else:
         console.print("[bold green]Cleanup completed[/]")
+        if summary.get("rollback") and summary.get("trash_id"):
+            tid = summary["trash_id"]
+            console.print(f"[bold cyan]Rollback available:[/] lh --restore {tid}")
+            console.print()
         console.print()
 
     for name, result in summary.get("results", {}).items():
@@ -919,6 +960,9 @@ def show_help() -> None:
     diag_table.add_row("[bold]lh --sensors[/]",   "Hardware sensor readout:\nCPU temps per-core, GPU temp/usage/power,\nfan speeds, disk temps, battery temp,\npower consumption")
     diag_table.add_row("[bold]lh --kernel[/]",   "Deep kernel-level analysis:\nASLR, taint flags, CPU vulnerabilities,\nLSM status, boot params, dmesg errors,\nloaded modules, kernel security settings")
     diag_table.add_row("[bold]lh --malware[/]",   "Malware & rootkit scan:\nhidden process detection,\nSUID binary audit, rootkit file checks,\nsuspicious cron/timer jobs,\nworld-writable PATH, unknown port listeners")
+    diag_table.add_row("[bold]lh --restore list[/]", "List available rollback snapshots")
+    diag_table.add_row("[bold]lh --restore <id>[/]","Restore a cleanup snapshot")
+    diag_table.add_row("[bold]lh --purge-trash[/]", "Permanently delete all rollback snapshots")
     diag_table.add_row("[bold]lh --history[/]",   "Show cleanup history with dates and freed space")
     diag_table.add_row("[bold]lh --version[/]",   "Show version")
     console.print(diag_table)
@@ -927,7 +971,7 @@ def show_help() -> None:
     clean_table = Table(title="Cleanup Commands", box=box.SIMPLE)
     clean_table.add_column("Command", style="bold yellow", width=20)
     clean_table.add_column("What it does")
-    clean_table.add_row("[bold]lh --clean[/]",         "Run all safe cleanups:\n  • User cache (pip, yay, npm, cargo, etc.)\n  • Thumbnail cache\n  • /tmp\n  • Journal logs (7d)\n  • Pacman cache (paccache -rk2)\n  • Unused Flatpak runtimes")
+    clean_table.add_row("[bold]lh --clean[/]",         "Run all safe cleanups with rollback:\n  • User cache (pip, yay, npm, cargo, etc.)\n  • Thumbnail cache\n  • /tmp\n  • Journal logs (7d)\n  • Pacman cache (paccache -rk2)\n  • Unused Flatpak runtimes\n  • Everything is moved to rollback storage\n  • Restore with: lh --restore <id>")
     clean_table.add_row("[bold]lh --clean --dry-run[/]","Preview what would be deleted\nwithout actually removing anything")
     console.print(clean_table)
     console.print()

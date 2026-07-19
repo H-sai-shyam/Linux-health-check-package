@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-from linux_health.collectors.base import BaseCollector, Finding
+from linux_health.collectors.base import BaseCollector, Finding, SEVERITY_PENALTY
 from linux_health.utils import run_cmd, command_exists
 
 

@@ -7,7 +7,7 @@ def get_cache_size() -> int:
     return get_dir_size(Path("/var/lib/flatpak"))
 
 
-def clean(dry_run: bool = False) -> dict:
+def clean(dry_run: bool = False, rollback: bool = False) -> dict:
     result: dict = {"freed": 0, "actions": []}
     if not command_exists("flatpak"):
         result["error"] = "flatpak not found"
