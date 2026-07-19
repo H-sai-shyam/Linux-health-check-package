@@ -17,3 +17,6 @@ dependencies = [
 
 [project.scripts]
 linux-health = "linux_health.cli:app"
+
+[tool.setuptools.packages]
+find = {namespaces = false}

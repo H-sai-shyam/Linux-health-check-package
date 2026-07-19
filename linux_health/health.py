@@ -100,7 +100,8 @@ def get_next_cleanup() -> str | None:
 
 
 def collect_all() -> dict:
-    return {
+    from linux_health.collectors.healthcheck import run_all_checks
+    data = {
         "system": get_system_info(),
         "cpu": cpu.get_info(),
         "cpu_temp": cpu.get_temperature(),
@@ -115,6 +116,11 @@ def collect_all() -> dict:
         "last_cleanup": get_last_cleanup(),
         "next_cleanup": get_next_cleanup(),
     }
+    try:
+        data["health_check"] = run_all_checks(tier="standard")
+    except Exception:
+        pass
+    return data
 
 
 def get_doctor_recommendations(data: dict) -> list[dict]:

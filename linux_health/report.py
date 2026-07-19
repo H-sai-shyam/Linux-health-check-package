@@ -32,6 +32,26 @@ def show_dashboard(data: dict, cleanup_summary: dict | None = None,
     console.print(header)
     console.print()
 
+    health_check = data.get("health_check")
+    if health_check:
+        overall = health_check.get("overall_score", 100)
+        counts = health_check.get("severity_counts", {})
+        cat_scores = health_check.get("category_scores", {})
+        bar = fmt_usage_bar(overall)
+        color = "green" if overall >= 80 else "yellow" if overall >= 50 else "red"
+        h_table = Table(show_header=False, box=box.SIMPLE, padding=(0, 1))
+        h_table.add_column("Key", style="bold yellow")
+        h_table.add_column("Value")
+        h_table.add_row("Overall", f"[bold {color}]{bar}  {overall:.0f}/100[/]")
+        h_table.add_row("Critical", f"[red]{counts.get('critical', 0)}[/]")
+        h_table.add_row("Warnings", f"[yellow]{counts.get('warning', 0)}[/]")
+        h_table.add_row("Info", f"[cyan]{counts.get('info', 0)}[/]")
+        if cat_scores:
+            cats = "  ".join(f"{k}: [bold]{v:.0f}[/]" for k, v in sorted(cat_scores.items()))
+            h_table.add_row("Per category", cats)
+        console.print(Panel(h_table, title="[bold]HEALTH SCORE[/]", border_style=color))
+        console.print()
+
     sys = data.get("system", {})
     s_table = Table(show_header=False, box=box.SIMPLE, padding=(0, 1))
     s_table.add_column("Key", style="bold yellow")
@@ -349,6 +369,61 @@ def show_battery_report(bat: dict) -> None:
             border_style="red",
         ))
         console.print()
+
+
+def show_findings_summary(findings: list, title: str = "Findings") -> None:
+    if not findings:
+        return
+    by_severity: dict = {"critical": [], "warning": [], "info": [], "pass": []}
+    for f in findings:
+        by_severity.setdefault(f.severity, []).append(f)
+
+    for sev, label, style, border in [
+        ("critical", "CRITICAL", "bold red", "red"),
+        ("warning", "WARNINGS", "bold yellow", "yellow"),
+        ("info", "INFO", "cyan", "blue"),
+        ("pass", "PASS", "green", "green"),
+    ]:
+        items = by_severity.get(sev, [])
+        if not items:
+            continue
+        for f in items:
+            fd_table = Table(show_header=False, box=box.SIMPLE, padding=(0, 1))
+            fd_table.add_column("Key", style="bold yellow")
+            fd_table.add_column("Value")
+            fd_table.add_row("Title", f.title)
+            fd_table.add_row("Detail", f.detail)
+            if f.suggestion:
+                fd_table.add_row("Suggestion", f"[italic]{f.suggestion}[/]")
+            if f.evidence:
+                for k, v in list(f.evidence.items())[:3]:
+                    try:
+                        fd_table.add_row(k, str(v)[:80])
+                    except Exception:
+                        pass
+            console.print(Panel(fd_table, title=f"[{style}] {label} [/]", border_style=border))
+            console.print()
+
+
+def show_deep_scan_results(title: str, findings: list, score: float) -> None:
+    from linux_health.collectors.base import Finding
+
+    header = Panel(
+        Text(f" {title} ", style="bold green", justify="center"),
+        box=box.HEAVY, border_style="green",
+    )
+    console.print(); console.print(header); console.print()
+
+    color = "green" if score >= 80 else "yellow" if score >= 50 else "red"
+    bar = fmt_usage_bar(score)
+    console.print(f"[bold]Score:[/] [{color}]{bar}  {score:.0f}/100[/]")
+    console.print()
+
+    if not findings:
+        console.print("[green]No issues found.[/]")
+        console.print()
+    else:
+        show_findings_summary(findings)
 
 
 def show_history() -> None:
@@ -719,12 +794,19 @@ def show_boot_report(data: dict) -> None:
         console.print()
 
 
-def show_sensors_report(data: dict) -> None:
+def show_sensors_report(data: dict, hw_findings: list | None = None, hw_score: float | None = None) -> None:
     header = Panel(
         Text(" Sensors Report ", style="bold green", justify="center"),
         box=box.HEAVY, border_style="green",
     )
     console.print(); console.print(header); console.print()
+
+    if hw_findings and hw_score is not None:
+        color = "green" if hw_score >= 80 else "yellow" if hw_score >= 50 else "red"
+        bar = fmt_usage_bar(hw_score)
+        console.print(f"[bold]Hardware Condition:[/] [{color}]{bar}  {hw_score:.0f}%[/]")
+        console.print()
+        show_findings_summary(hw_findings)
 
     cpu_temps = data.get("cpu_temps", [])
     if cpu_temps:
@@ -825,7 +907,7 @@ def show_help() -> None:
     diag_table = Table(title="Diagnostics & Reports", box=box.SIMPLE)
     diag_table.add_column("Command", style="bold yellow", width=20)
     diag_table.add_column("What it does")
-    diag_table.add_row("[bold]lh[/]",   "Complete system dashboard")
+    diag_table.add_row("[bold]lh[/]",   "Complete system dashboard\nwith health score, kernel & malware findings")
     diag_table.add_row("[bold]lh --scan[/]",   "Scan only, no cleanup")
     diag_table.add_row("[bold]lh --doctor[/]", "Run diagnostics & recommendations")
     diag_table.add_row("[bold]lh --disk[/]",   "Detailed disk analysis:\nlargest dirs, largest files,\ndirectory breakdown, all mount points")
@@ -835,6 +917,8 @@ def show_help() -> None:
     diag_table.add_row("[bold]lh --security[/]",   "Security audit:\nfailed SSH logins, open ports,\nSUID issues, world-writable /etc files,\nnon-root UID 0 users, recent cron/timers,\nknown vulnerabilities (arch-audit)")
     diag_table.add_row("[bold]lh --boot[/]",   "Boot & kernel analysis:\ninstalled kernels, /boot usage,\nGRUB config, systemd-analyze blame,\ndmesg errors, failed services")
     diag_table.add_row("[bold]lh --sensors[/]",   "Hardware sensor readout:\nCPU temps per-core, GPU temp/usage/power,\nfan speeds, disk temps, battery temp,\npower consumption")
+    diag_table.add_row("[bold]lh --kernel[/]",   "Deep kernel-level analysis:\nASLR, taint flags, CPU vulnerabilities,\nLSM status, boot params, dmesg errors,\nloaded modules, kernel security settings")
+    diag_table.add_row("[bold]lh --malware[/]",   "Malware & rootkit scan:\nhidden process detection,\nSUID binary audit, rootkit file checks,\nsuspicious cron/timer jobs,\nworld-writable PATH, unknown port listeners")
     diag_table.add_row("[bold]lh --history[/]",   "Show cleanup history with dates and freed space")
     diag_table.add_row("[bold]lh --version[/]",   "Show version")
     console.print(diag_table)
