@@ -1,0 +1,11 @@
+[Unit]
+Description=Set touchpad IRQ affinity for smooth cursor
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo fff > /proc/irq/27/smp_affinity; echo fff > /proc/irq/155/smp_affinity'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

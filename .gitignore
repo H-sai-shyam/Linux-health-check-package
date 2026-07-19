@@ -1,0 +1,20 @@
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Test cache
+.pytest_cache/
+
+# IDE (optional)
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db

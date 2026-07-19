@@ -1,0 +1,9 @@
+[Unit]
+Description=Linux Health Weekly Maintenance
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/linux-health --clean
+
+[Install]
+WantedBy=default.target
